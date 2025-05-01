@@ -14,6 +14,12 @@
 (define-constant err-policy-expired (err u107))
 (define-constant err-insufficient-funds (err u108))
 (define-constant err-not-disrupted (err u109))
+(define-constant err-invalid-flight-number (err u110))
+(define-constant err-invalid-date (err u111))
+(define-constant err-invalid-disruption-type (err u112))
+(define-constant err-invalid-delay (err u113))
+(define-constant err-invalid-oracle (err u114))
+(define-constant err-invalid-amount (err u115))
 
 ;; Define data maps
 (define-map policies
@@ -46,6 +52,42 @@
 ;; Define data variables
 (define-data-var policy-counter uint u0)
 (define-data-var treasury-balance uint u0)
+(define-data-var min-flight-length uint u2)
+(define-data-var max-delay-minutes uint u1440) ;; 24 hours in minutes
+
+;; Helper functions for input validation
+
+(define-private (is-valid-flight-number (flight-number (string-ascii 10)))
+  (let
+    (
+      (length (len flight-number))
+    )
+    (and 
+      (>= length (var-get min-flight-length))
+      (<= length u10)
+    )
+  )
+)
+
+(define-private (is-valid-date (date uint))
+  (> date u0)
+)
+
+(define-private (is-valid-disruption-type (disruption-type (string-ascii 20)))
+  (let
+    (
+      (length (len disruption-type))
+    )
+    (and 
+      (> length u0)
+      (<= length u20)
+    )
+  )
+)
+
+(define-private (is-valid-delay (delay-minutes uint))
+  (<= delay-minutes (var-get max-delay-minutes))
+)
 
 ;; Read-only functions
 
@@ -81,11 +123,15 @@
   (let
     (
       (new-policy-id (+ (var-get policy-counter) u1))
+      (validated-flight-number flight-number)
     )
     ;; Validate inputs
     (asserts! (> premium u0) err-invalid-premium)
     (asserts! (> coverage-amount premium) err-invalid-coverage)
     (asserts! (> expiration-date departure-date) err-invalid-coverage)
+    (asserts! (is-valid-flight-number validated-flight-number) err-invalid-flight-number)
+    (asserts! (is-valid-date departure-date) err-invalid-date)
+    (asserts! (is-valid-date expiration-date) err-invalid-date)
 
     ;; Transfer premium payment to contract
     (try! (stx-transfer? premium tx-sender (as-contract tx-sender)))
@@ -100,7 +146,7 @@
         holder: tx-sender,
         premium-paid: premium,
         coverage-amount: coverage-amount,
-        flight-number: flight-number,
+        flight-number: validated-flight-number,
         departure-date: departure-date,
         expiration-date: expiration-date,
         claimed: false
@@ -121,17 +167,29 @@
     (date uint) 
     (disruption-type (string-ascii 20))
     (delay-minutes uint))
-  (begin
+  (let
+    (
+      (validated-flight-number flight-number)
+      (validated-date date)
+      (validated-disruption-type disruption-type)
+      (validated-delay-minutes delay-minutes)
+    )
     ;; Check if sender is an authorized oracle
     (asserts! (is-oracle tx-sender) err-not-oracle)
 
+    ;; Validate inputs
+    (asserts! (is-valid-flight-number validated-flight-number) err-invalid-flight-number)
+    (asserts! (is-valid-date validated-date) err-invalid-date)
+    (asserts! (is-valid-disruption-type validated-disruption-type) err-invalid-disruption-type)
+    (asserts! (is-valid-delay validated-delay-minutes) err-invalid-delay)
+
     ;; Record the disruption
     (map-set flight-disruptions
-      { flight-number: flight-number, date: date }
+      { flight-number: validated-flight-number, date: validated-date }
       { 
         disrupted: true,
-        disruption-type: disruption-type,
-        delay-minutes: delay-minutes
+        disruption-type: validated-disruption-type,
+        delay-minutes: validated-delay-minutes
       }
     )
 
@@ -171,7 +229,7 @@
     (var-set treasury-balance (- (var-get treasury-balance) coverage))
 
     ;; Transfer coverage amount to policy holder
-    (as-contract (stx-transfer? coverage contract-caller holder))
+    (as-contract (stx-transfer? coverage tx-sender holder))
   )
 )
 
@@ -180,7 +238,13 @@
 ;; Add or update oracle
 (define-public (set-oracle (oracle principal) (active bool))
   (begin
+    ;; Validate sender is contract owner
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+
+    ;; Validate oracle is not null principal
+    (asserts! (not (is-eq oracle 'SP000000000000000000002Q6VF78)) err-invalid-oracle)
+
+    ;; Set oracle status
     (map-set oracles { oracle: oracle } { active: active })
     (ok true)
   )
@@ -189,7 +253,11 @@
 ;; Withdraw funds from treasury (owner only)
 (define-public (withdraw-funds (amount uint))
   (begin
+    ;; Validate sender is contract owner
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+
+    ;; Validate amount
+    (asserts! (> amount u0) err-invalid-amount)
     (asserts! (<= amount (var-get treasury-balance)) err-insufficient-funds)
 
     ;; Update treasury balance
