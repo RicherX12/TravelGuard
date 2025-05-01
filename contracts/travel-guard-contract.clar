@@ -12,6 +12,8 @@
 (define-constant err-invalid-premium (err u105))
 (define-constant err-invalid-coverage (err u106))
 (define-constant err-policy-expired (err u107))
+(define-constant err-insufficient-funds (err u108))
+(define-constant err-not-disrupted (err u109))
 
 ;; Define data maps
 (define-map policies
@@ -157,7 +159,7 @@
     (asserts! (is-eq tx-sender holder) err-not-policy-holder)
     (asserts! (not claimed) err-already-claimed)
     (asserts! (< current-time expiration) err-policy-expired)
-    (asserts! is-disrupted true)
+    (asserts! is-disrupted err-not-disrupted)
 
     ;; Update policy to claimed
     (map-set policies
@@ -169,7 +171,7 @@
     (var-set treasury-balance (- (var-get treasury-balance) coverage))
 
     ;; Transfer coverage amount to policy holder
-    (as-contract (stx-transfer? coverage contract-owner holder))
+    (as-contract (stx-transfer? coverage contract-caller holder))
   )
 )
 
@@ -188,12 +190,12 @@
 (define-public (withdraw-funds (amount uint))
   (begin
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (asserts! (<= amount (var-get treasury-balance)) (err u108))
+    (asserts! (<= amount (var-get treasury-balance)) err-insufficient-funds)
 
     ;; Update treasury balance
     (var-set treasury-balance (- (var-get treasury-balance) amount))
 
     ;; Transfer funds to owner
-    (as-contract (stx-transfer? amount contract-owner contract-owner))
+    (as-contract (stx-transfer? amount tx-sender contract-owner))
   )
 )
